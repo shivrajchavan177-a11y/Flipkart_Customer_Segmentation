@@ -257,16 +257,21 @@ elif page == "Dashboard":
 
     with right2:
         st.subheader("Elbow Method")
-        inertia = []
-        for i in range(1, 11):
-            km = KMeans(n_clusters=i, random_state=42, n_init=10)
-            km.fit(scaled)
-            inertia.append(km.inertia_)
-        fig = px.line(
-            x=list(range(1, 11)), y=inertia, markers=True,
-            labels={"x": "Number of Clusters", "y": "WCSS"}
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        max_k = min(10, len(df))
+        if max_k < 2:
+            st.info("Need at least 2 customers to compute the elbow curve.")
+        else:
+            inertia = []
+            k_range = list(range(1, max_k + 1))
+            for i in k_range:
+                km = KMeans(n_clusters=i, random_state=42, n_init=10)
+                km.fit(scaled)
+                inertia.append(km.inertia_)
+            fig = px.line(
+                x=k_range, y=inertia, markers=True,
+                labels={"x": "Number of Clusters", "y": "WCSS"}
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("---")
     st.subheader("Segment Summary")
