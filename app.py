@@ -154,18 +154,56 @@ columns = list(raw_df.columns)
 
 
 def guess_index(name, options):
-    return options.index(name) if name in options else 0
+    """Find the best-matching column, ignoring case/underscore/space differences."""
+    def normalize(s):
+        return s.lower().replace("_", "").replace(" ", "")
+
+    target = normalize(name)
+    norm_options = [normalize(o) for o in options]
+
+    if target in norm_options:
+        return norm_options.index(target)
+
+    # fall back to keyword match (e.g. "spend" or "order")
+    keyword = None
+    if "spend" in target:
+        keyword = "spend"
+    elif "order" in target:
+        keyword = "order"
+
+    if keyword:
+        for i, o in enumerate(norm_options):
+            if keyword in o:
+                return i
+
+    return 0
 
 
-spend_col = st.sidebar.selectbox(
-    "Annual Spending column", columns, index=guess_index("Annual_Spending", columns)
-)
-orders_col = st.sidebar.selectbox(
-    "Orders Count column", columns, index=guess_index("Orders_Count", columns)
-)
+def safe_default_index(options, taken_index=None):
+    """Pick a fallback index that differs from an already-taken one, if possible."""
+    if taken_index is None or len(options) < 2:
+        return 0
+    return 1 if taken_index == 0 else 0
+
+
+spend_idx = guess_index("Annual_Spending", columns)
+orders_idx = guess_index("Orders_Count", columns)
+if orders_idx == spend_idx:
+    orders_idx = safe_default_index(columns, taken_index=spend_idx)
+
+spend_col = st.sidebar.selectbox("Annual Spending column", columns, index=spend_idx)
+orders_col = st.sidebar.selectbox("Orders Count column", columns, index=orders_idx)
+
+if spend_col == orders_col:
+    st.sidebar.error("Spending and Orders columns can't be the same. Please pick two different columns.")
+    st.stop()
 
 df = raw_df.rename(columns={spend_col: "Annual_Spending", orders_col: "Orders_Count"})
 df = clean_data(df)
+
+if not set(FEATURES).issubset(df.columns):
+    st.error("Couldn't find the required columns after mapping. Please check your column selections.")
+    st.stop()
 
 if df.shape[0] == 0:
     st.error("No usable rows left after cleaning. Check your file and column mapping.")
@@ -209,7 +247,7 @@ if page == "Overview":
 
     st.markdown("---")
     st.subheader("Dataset Preview")
-    st.dataframe(df.head(10), use_container_width=True)
+    st.dataframe(df.head(10), width='stretch')
 
 # ==================================
 # DASHBOARD
@@ -236,14 +274,14 @@ elif page == "Dashboard":
             color="Segment", title="Customer Segmentation",
             hover_data=[c for c in df.columns if c not in ["Cluster"]]
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     with right:
         st.subheader("Segment Distribution")
         seg_count = df["Segment"].value_counts().reset_index()
         seg_count.columns = ["Segment", "Customers"]
         fig = px.bar(seg_count, x="Segment", y="Customers", text="Customers", color="Segment")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     st.markdown("---")
 
@@ -253,7 +291,7 @@ elif page == "Dashboard":
         st.subheader("Average Spending by Segment")
         avg = df.groupby("Segment")["Annual_Spending"].mean().reset_index()
         fig = px.bar(avg, x="Segment", y="Annual_Spending", text_auto=".2s", color="Segment")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     with right2:
         st.subheader("Elbow Method")
@@ -271,12 +309,12 @@ elif page == "Dashboard":
                 x=k_range, y=inertia, markers=True,
                 labels={"x": "Number of Clusters", "y": "WCSS"}
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
     st.markdown("---")
     st.subheader("Segment Summary")
     summary = df.groupby("Segment")[FEATURES].mean().round(2)
-    st.dataframe(summary, use_container_width=True)
+    st.dataframe(summary, width='stretch')
 
     st.markdown("---")
     st.subheader("📥 Download Clustered Dataset")
@@ -327,36 +365,42 @@ elif page == "Predict from File":
         st.write(f"Loaded {batch_raw.shape[0]} rows.")
 
         b_cols = list(batch_raw.columns)
+        b_spend_idx = guess_index("Annual_Spending", b_cols)
+        b_orders_idx = guess_index("Orders_Count", b_cols)
+        if b_orders_idx == b_spend_idx:
+            b_orders_idx = safe_default_index(b_cols, taken_index=b_spend_idx)
+
         bc1, bc2 = st.columns(2)
         with bc1:
-            b_spend_col = st.selectbox(
-                "Annual Spending column", b_cols, index=guess_index("Annual_Spending", b_cols), key="b_spend"
-            )
+            b_spend_col = st.selectbox("Annual Spending column", b_cols, index=b_spend_idx, key="b_spend")
         with bc2:
-            b_orders_col = st.selectbox(
-                "Orders Count column", b_cols, index=guess_index("Orders_Count", b_cols), key="b_orders"
-            )
+            b_orders_col = st.selectbox("Orders Count column", b_cols, index=b_orders_idx, key="b_orders")
 
-        if st.button("Run Prediction"):
+        if b_spend_col == b_orders_col:
+            st.error("Spending and Orders columns can't be the same. Please pick two different columns.")
+        elif st.button("Run Prediction"):
             batch_df = batch_raw.rename(
                 columns={b_spend_col: "Annual_Spending", b_orders_col: "Orders_Count"}
             )
             batch_df = clean_data(batch_df)
 
-            b_scaled = scaler.transform(batch_df[FEATURES])
-            batch_df["Cluster"] = model.predict(b_scaled)
-            batch_df, _ = label_segments(batch_df)
+            if not set(FEATURES).issubset(batch_df.columns) or batch_df.empty:
+                st.error("Couldn't find valid data in the required columns after cleaning. Please check your file.")
+            else:
+                b_scaled = scaler.transform(batch_df[FEATURES])
+                batch_df["Cluster"] = model.predict(b_scaled)
+                batch_df, _ = label_segments(batch_df)
 
-            st.success(f"Predicted segments for {batch_df.shape[0]} customers.")
-            st.dataframe(batch_df, use_container_width=True)
+                st.success(f"Predicted segments for {batch_df.shape[0]} customers.")
+                st.dataframe(batch_df, width='stretch')
 
-            fig = px.pie(batch_df, names="Segment", title="Predicted Segment Split")
-            st.plotly_chart(fig, use_container_width=True)
+                fig = px.pie(batch_df, names="Segment", title="Predicted Segment Split")
+                st.plotly_chart(fig, width='stretch')
 
-            out_csv = batch_df.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                "⬇ Download Predictions", data=out_csv,
-                file_name="Predicted_Segments.csv", mime="text/csv"
-            )
+                out_csv = batch_df.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    "⬇ Download Predictions", data=out_csv,
+                    file_name="Predicted_Segments.csv", mime="text/csv"
+                )
     else:
         st.info("Upload a file above to get started.")
