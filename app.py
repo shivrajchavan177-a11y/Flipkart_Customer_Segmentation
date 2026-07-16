@@ -323,6 +323,23 @@ df["Cluster"] = model.fit_predict(scaled)
 df, label_map = label_segments(df)
 
 # ----------------------------------
+# ASSIGNMENT CONFIDENCE
+# ----------------------------------
+# K-Means force-assigns every point to its nearest centroid, even ones sitting
+# right between two segments. Rather than hide that, we flag genuinely
+# ambiguous customers (where the nearest and second-nearest centroid are
+# nearly equidistant) so the chart honestly shows where segment boundaries
+# are fuzzy versus where customers are confidently in one group.
+
+distances = model.transform(scaled)  # distance to every centroid, shape (n, k)
+sorted_dist = np.sort(distances, axis=1)
+nearest, second_nearest = sorted_dist[:, 0], sorted_dist[:, 1]
+confidence_ratio = nearest / np.maximum(second_nearest, 1e-9)  # closer to 1 = more ambiguous
+
+BOUNDARY_THRESHOLD = 0.7
+df["Confident"] = confidence_ratio < BOUNDARY_THRESHOLD
+
+
 # SIDEBAR — NAVIGATION
 # ----------------------------------
 
@@ -397,12 +414,24 @@ elif page == "Dashboard":
 
     with left:
         st.subheader("Customer Segments")
+
+        n_boundary = int((~df["Confident"]).sum())
+        pct_boundary = n_boundary / len(df) * 100
+        st.caption(
+            f"🟢 {len(df) - n_boundary} confidently assigned  •  "
+            f"⚪ {n_boundary} near a segment boundary ({pct_boundary:.1f}%)"
+        )
+
         fig = px.scatter(
             df, x="Annual_Spending", y="Orders_Count",
             color="Segment", title="Customer Segmentation",
             hover_data=[c for c in df.columns if c not in ["Cluster"]],
-            opacity=0.75
+            opacity=0.85,
+            symbol="Confident",
+            symbol_map={True: "circle", False: "circle-open"},
+            size=df["Confident"].map({True: 9, False: 6})
         )
+        fig.update_traces(marker=dict(line=dict(width=1)))
 
         # Overlay cluster centroids (in original units) so the segment
         # structure is easy to read at a glance, like a textbook cluster diagram.
