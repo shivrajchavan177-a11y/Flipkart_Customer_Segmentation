@@ -4,8 +4,10 @@ import numpy as np
 import joblib
 
 import plotly.express as px
+import plotly.graph_objects as go
 
 from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score
 
 # ----------------------------------
 # PAGE CONFIGURATION
@@ -25,7 +27,7 @@ st.markdown("""
 <style>
 
 .main{
-    background-color:#F8F9FA;
+    background-color:#FFFFFF;
 }
 
 h1{
@@ -40,9 +42,28 @@ h1{
 
 .metric-card{
     padding:15px;
-    border-radius:10px;
+    border-radius:12px;
     background:#FFFFFF;
-    box-shadow:0px 2px 8px rgba(0,0,0,0.2);
+    border:1px solid #EAECEF;
+    box-shadow:0px 2px 8px rgba(0,0,0,0.06);
+}
+
+.cleaning-card{
+    padding:18px 20px;
+    border-radius:12px;
+    background:#FFFFFF;
+    border:1px solid #EAECEF;
+    box-shadow:0px 2px 10px rgba(0,0,0,0.06);
+    margin-bottom:12px;
+}
+
+.cleaning-note{
+    padding:10px 14px;
+    border-radius:8px;
+    background:#EAF7EE;
+    color:#1E7E34;
+    font-weight:500;
+    margin-top:8px;
 }
 
 </style>
@@ -83,9 +104,82 @@ def read_uploaded_file(uploaded_file):
 
 
 def clean_data(df):
-    df = df.drop_duplicates()
-    df = df.dropna()
-    return df
+    """Remove duplicates and fill missing values (mean for numeric, mode for categorical).
+    Returns the cleaned dataframe plus stats for display."""
+    dup_count = int(df.duplicated().sum())
+    df = df.drop_duplicates().copy()
+
+    missing_count = int(df.isna().sum().sum())
+    for col in df.columns:
+        if df[col].isna().any():
+            if pd.api.types.is_numeric_dtype(df[col]):
+                df[col] = df[col].fillna(df[col].mean())
+            else:
+                mode = df[col].mode()
+                fill_value = mode.iloc[0] if not mode.empty else ""
+                df[col] = df[col].fillna(fill_value)
+
+    return df, dup_count, missing_count
+
+
+def render_cleaning_card(features, dup_count, missing_count, key_suffix=""):
+    st.markdown('<div class="cleaning-card">', unsafe_allow_html=True)
+    st.markdown("#### 🧹 Data Cleaning")
+    st.caption("Select features for clustering (numeric or categorical)")
+    st.multiselect(
+        "Features",
+        options=features,
+        default=features,
+        disabled=True,
+        label_visibility="collapsed",
+        key=f"features_display_{key_suffix}"
+    )
+    st.markdown(
+        f'<div class="cleaning-note">✔ Removed {dup_count} duplicate rows</div>',
+        unsafe_allow_html=True
+    )
+    st.markdown(
+        f'<div class="cleaning-note">✔ Filled {missing_count} missing values '
+        f'(mean for numeric, mode for categorical)</div>',
+        unsafe_allow_html=True
+    )
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
+def compute_silhouette(scaled_features, cluster_labels):
+    unique_labels = np.unique(cluster_labels)
+    if len(unique_labels) < 2 or len(unique_labels) >= len(scaled_features):
+        return None
+    try:
+        return silhouette_score(scaled_features, cluster_labels)
+    except ValueError:
+        return None
+
+
+def render_silhouette_gauge(score):
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=score,
+        number={'valueformat': '.3f', 'font': {'size': 48, 'color': '#262730'}},
+        gauge={
+            'axis': {'range': [-1, 1], 'tickcolor': '#8A8F98'},
+            'bar': {'color': '#A78BFA', 'thickness': 0.3},
+            'bgcolor': 'white',
+            'borderwidth': 0,
+            'steps': [
+                {'range': [-1, 0], 'color': '#FDEDEC'},
+                {'range': [0, 0.5], 'color': '#FEF9E7'},
+                {'range': [0.5, 1], 'color': '#EAFAF1'},
+            ],
+        },
+    ))
+    fig.update_layout(
+        paper_bgcolor="white",
+        font={'color': "#262730"},
+        height=280,
+        margin=dict(l=30, r=30, t=30, b=10)
+    )
+    return fig
 
 
 def label_segments(df_with_clusters):
@@ -199,7 +293,7 @@ if spend_col == orders_col:
     st.stop()
 
 df = raw_df.rename(columns={spend_col: "Annual_Spending", orders_col: "Orders_Count"})
-df = clean_data(df)
+df, main_dup_count, main_missing_count = clean_data(df)
 
 if not set(FEATURES).issubset(df.columns):
     st.error("Couldn't find the required columns after mapping. Please check your column selections.")
@@ -246,6 +340,9 @@ if page == "Overview":
     col4.metric("Segments", df["Segment"].nunique())
 
     st.markdown("---")
+    render_cleaning_card(FEATURES, main_dup_count, main_missing_count, key_suffix="overview")
+
+    st.markdown("---")
     st.subheader("Dataset Preview")
     st.dataframe(df.head(10), width='stretch')
 
@@ -262,6 +359,23 @@ elif page == "Dashboard":
     c2.metric("Average Spending", f"₹ {df['Annual_Spending'].mean():,.0f}")
     c3.metric("Average Orders", round(df["Orders_Count"].mean(), 2))
     c4.metric("Segments", df["Segment"].nunique())
+
+    st.markdown("---")
+
+    st.subheader("⭐ Silhouette Score")
+    sil_score = compute_silhouette(scaled, df["Cluster"])
+    if sil_score is None:
+        st.info("Need at least 2 distinct segments (with fewer clusters than customers) to compute this.")
+    else:
+        gc1, gc2 = st.columns([1, 1])
+        with gc1:
+            st.plotly_chart(render_silhouette_gauge(sil_score), width='stretch')
+        with gc2:
+            st.caption(
+                "The silhouette score measures how well-separated the customer segments are, "
+                "from -1 (overlapping/poor) to +1 (well-separated). Above 0.5 generally "
+                "indicates a reasonably strong clustering structure."
+            )
 
     st.markdown("---")
 
@@ -382,11 +496,13 @@ elif page == "Predict from File":
             batch_df = batch_raw.rename(
                 columns={b_spend_col: "Annual_Spending", b_orders_col: "Orders_Count"}
             )
-            batch_df = clean_data(batch_df)
+            batch_df, b_dup_count, b_missing_count = clean_data(batch_df)
 
             if not set(FEATURES).issubset(batch_df.columns) or batch_df.empty:
                 st.error("Couldn't find valid data in the required columns after cleaning. Please check your file.")
             else:
+                render_cleaning_card(FEATURES, b_dup_count, b_missing_count, key_suffix="batch")
+
                 b_scaled = scaler.transform(batch_df[FEATURES])
                 batch_df["Cluster"] = model.predict(b_scaled)
                 batch_df, _ = label_segments(batch_df)
