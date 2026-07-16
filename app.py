@@ -1,12 +1,12 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import joblib
 
 import plotly.express as px
 import plotly.graph_objects as go
 
 from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import silhouette_score
 
 # ----------------------------------
@@ -79,11 +79,12 @@ st.caption("K-Means based customer segmentation, with support for your own datas
 st.markdown("---")
 
 # ----------------------------------
-# LOAD MODEL
+# FEATURES
 # ----------------------------------
-
-model = joblib.load("flipkart_kmeans.pkl")
-scaler = joblib.load("flipkart_scaler.pkl")
+# Note: the model is fit fresh on whichever dataset is loaded below (default or
+# uploaded), rather than reused from a fixed pretrained file. A model trained on
+# one dataset's scale/distribution will misclassify a differently-scaled dataset,
+# since the cluster boundaries won't match the new data's actual shape.
 
 FEATURES = ["Annual_Spending", "Orders_Count"]
 
@@ -303,9 +304,22 @@ if df.shape[0] == 0:
     st.error("No usable rows left after cleaning. Check your file and column mapping.")
     st.stop()
 
+st.sidebar.markdown("---")
+max_clusters = max(2, min(6, df.shape[0] - 1))
+n_clusters = st.sidebar.slider(
+    "Number of Segments (K)",
+    min_value=2,
+    max_value=max_clusters,
+    value=min(3, max_clusters),
+    help="The model is fit fresh on the currently loaded dataset, so segments always match its actual shape."
+)
+
 X = df[FEATURES]
-scaled = scaler.transform(X)
-df["Cluster"] = model.predict(scaled)
+scaler = StandardScaler()
+scaled = scaler.fit_transform(X)
+
+model = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+df["Cluster"] = model.fit_predict(scaled)
 df, label_map = label_segments(df)
 
 # ----------------------------------
