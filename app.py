@@ -1,13 +1,11 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import joblib
 
 import plotly.express as px
-import plotly.graph_objects as go
 
 from sklearn.cluster import KMeans
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import silhouette_score
 
 # ----------------------------------
 # PAGE CONFIGURATION
@@ -27,7 +25,7 @@ st.markdown("""
 <style>
 
 .main{
-    background-color:#FFFFFF;
+    background-color:#F8F9FA;
 }
 
 h1{
@@ -42,28 +40,9 @@ h1{
 
 .metric-card{
     padding:15px;
-    border-radius:12px;
+    border-radius:10px;
     background:#FFFFFF;
-    border:1px solid #EAECEF;
-    box-shadow:0px 2px 8px rgba(0,0,0,0.06);
-}
-
-.cleaning-card{
-    padding:18px 20px;
-    border-radius:12px;
-    background:#FFFFFF;
-    border:1px solid #EAECEF;
-    box-shadow:0px 2px 10px rgba(0,0,0,0.06);
-    margin-bottom:12px;
-}
-
-.cleaning-note{
-    padding:10px 14px;
-    border-radius:8px;
-    background:#EAF7EE;
-    color:#1E7E34;
-    font-weight:500;
-    margin-top:8px;
+    box-shadow:0px 2px 8px rgba(0,0,0,0.2);
 }
 
 </style>
@@ -79,12 +58,11 @@ st.caption("K-Means based customer segmentation, with support for your own datas
 st.markdown("---")
 
 # ----------------------------------
-# FEATURES
+# LOAD MODEL
 # ----------------------------------
-# Note: the model is fit fresh on whichever dataset is loaded below (default or
-# uploaded), rather than reused from a fixed pretrained file. A model trained on
-# one dataset's scale/distribution will misclassify a differently-scaled dataset,
-# since the cluster boundaries won't match the new data's actual shape.
+
+model = joblib.load("flipkart_kmeans.pkl")
+scaler = joblib.load("flipkart_scaler.pkl")
 
 FEATURES = ["Annual_Spending", "Orders_Count"]
 
@@ -105,82 +83,9 @@ def read_uploaded_file(uploaded_file):
 
 
 def clean_data(df):
-    """Remove duplicates and fill missing values (mean for numeric, mode for categorical).
-    Returns the cleaned dataframe plus stats for display."""
-    dup_count = int(df.duplicated().sum())
-    df = df.drop_duplicates().copy()
-
-    missing_count = int(df.isna().sum().sum())
-    for col in df.columns:
-        if df[col].isna().any():
-            if pd.api.types.is_numeric_dtype(df[col]):
-                df[col] = df[col].fillna(df[col].mean())
-            else:
-                mode = df[col].mode()
-                fill_value = mode.iloc[0] if not mode.empty else ""
-                df[col] = df[col].fillna(fill_value)
-
-    return df, dup_count, missing_count
-
-
-def render_cleaning_card(features, dup_count, missing_count, key_suffix=""):
-    st.markdown('<div class="cleaning-card">', unsafe_allow_html=True)
-    st.markdown("#### 🧹 Data Cleaning")
-    st.caption("Select features for clustering (numeric or categorical)")
-    st.multiselect(
-        "Features",
-        options=features,
-        default=features,
-        disabled=True,
-        label_visibility="collapsed",
-        key=f"features_display_{key_suffix}"
-    )
-    st.markdown(
-        f'<div class="cleaning-note">✔ Removed {dup_count} duplicate rows</div>',
-        unsafe_allow_html=True
-    )
-    st.markdown(
-        f'<div class="cleaning-note">✔ Filled {missing_count} missing values '
-        f'(mean for numeric, mode for categorical)</div>',
-        unsafe_allow_html=True
-    )
-    st.markdown('</div>', unsafe_allow_html=True)
-
-
-def compute_silhouette(scaled_features, cluster_labels):
-    unique_labels = np.unique(cluster_labels)
-    if len(unique_labels) < 2 or len(unique_labels) >= len(scaled_features):
-        return None
-    try:
-        return silhouette_score(scaled_features, cluster_labels)
-    except ValueError:
-        return None
-
-
-def render_silhouette_gauge(score):
-    fig = go.Figure(go.Indicator(
-        mode="gauge+number",
-        value=score,
-        number={'valueformat': '.3f', 'font': {'size': 48, 'color': '#262730'}},
-        gauge={
-            'axis': {'range': [-1, 1], 'tickcolor': '#8A8F98'},
-            'bar': {'color': '#A78BFA', 'thickness': 0.3},
-            'bgcolor': 'white',
-            'borderwidth': 0,
-            'steps': [
-                {'range': [-1, 0], 'color': '#FDEDEC'},
-                {'range': [0, 0.5], 'color': '#FEF9E7'},
-                {'range': [0.5, 1], 'color': '#EAFAF1'},
-            ],
-        },
-    ))
-    fig.update_layout(
-        paper_bgcolor="white",
-        font={'color': "#262730"},
-        height=280,
-        margin=dict(l=30, r=30, t=30, b=10)
-    )
-    return fig
+    df = df.drop_duplicates()
+    df = df.dropna()
+    return df
 
 
 def label_segments(df_with_clusters):
@@ -294,7 +199,7 @@ if spend_col == orders_col:
     st.stop()
 
 df = raw_df.rename(columns={spend_col: "Annual_Spending", orders_col: "Orders_Count"})
-df, main_dup_count, main_missing_count = clean_data(df)
+df = clean_data(df)
 
 if not set(FEATURES).issubset(df.columns):
     st.error("Couldn't find the required columns after mapping. Please check your column selections.")
@@ -304,42 +209,12 @@ if df.shape[0] == 0:
     st.error("No usable rows left after cleaning. Check your file and column mapping.")
     st.stop()
 
-st.sidebar.markdown("---")
-max_clusters = max(2, min(6, df.shape[0] - 1))
-n_clusters = st.sidebar.slider(
-    "Number of Segments (K)",
-    min_value=2,
-    max_value=max_clusters,
-    value=min(3, max_clusters),
-    help="The model is fit fresh on the currently loaded dataset, so segments always match its actual shape."
-)
-
 X = df[FEATURES]
-scaler = StandardScaler()
-scaled = scaler.fit_transform(X)
-
-model = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
-df["Cluster"] = model.fit_predict(scaled)
+scaled = scaler.transform(X)
+df["Cluster"] = model.predict(scaled)
 df, label_map = label_segments(df)
 
 # ----------------------------------
-# ASSIGNMENT CONFIDENCE
-# ----------------------------------
-# K-Means force-assigns every point to its nearest centroid, even ones sitting
-# right between two segments. Rather than hide that, we flag genuinely
-# ambiguous customers (where the nearest and second-nearest centroid are
-# nearly equidistant) so the chart honestly shows where segment boundaries
-# are fuzzy versus where customers are confidently in one group.
-
-distances = model.transform(scaled)  # distance to every centroid, shape (n, k)
-sorted_dist = np.sort(distances, axis=1)
-nearest, second_nearest = sorted_dist[:, 0], sorted_dist[:, 1]
-confidence_ratio = nearest / np.maximum(second_nearest, 1e-9)  # closer to 1 = more ambiguous
-
-BOUNDARY_THRESHOLD = 0.7
-df["Confident"] = confidence_ratio < BOUNDARY_THRESHOLD
-
-
 # SIDEBAR — NAVIGATION
 # ----------------------------------
 
@@ -371,9 +246,6 @@ if page == "Overview":
     col4.metric("Segments", df["Segment"].nunique())
 
     st.markdown("---")
-    render_cleaning_card(FEATURES, main_dup_count, main_missing_count, key_suffix="overview")
-
-    st.markdown("---")
     st.subheader("Dataset Preview")
     st.dataframe(df.head(10), width='stretch')
 
@@ -393,59 +265,15 @@ elif page == "Dashboard":
 
     st.markdown("---")
 
-    st.subheader("⭐ Silhouette Score")
-    sil_score = compute_silhouette(scaled, df["Cluster"])
-    if sil_score is None:
-        st.info("Need at least 2 distinct segments (with fewer clusters than customers) to compute this.")
-    else:
-        gc1, gc2 = st.columns([1, 1])
-        with gc1:
-            st.plotly_chart(render_silhouette_gauge(sil_score), width='stretch')
-        with gc2:
-            st.caption(
-                "The silhouette score measures how well-separated the customer segments are, "
-                "from -1 (overlapping/poor) to +1 (well-separated). Above 0.5 generally "
-                "indicates a reasonably strong clustering structure."
-            )
-
-    st.markdown("---")
-
     left, right = st.columns(2)
 
     with left:
         st.subheader("Customer Segments")
-
-        n_boundary = int((~df["Confident"]).sum())
-        pct_boundary = n_boundary / len(df) * 100
-        st.caption(
-            f"🟢 {len(df) - n_boundary} confidently assigned  •  "
-            f"⚪ {n_boundary} near a segment boundary ({pct_boundary:.1f}%)"
-        )
-
         fig = px.scatter(
             df, x="Annual_Spending", y="Orders_Count",
             color="Segment", title="Customer Segmentation",
-            hover_data=[c for c in df.columns if c not in ["Cluster"]],
-            opacity=0.85,
-            symbol="Confident",
-            symbol_map={True: "circle", False: "circle-open"},
-            size=df["Confident"].map({True: 9, False: 6})
+            hover_data=[c for c in df.columns if c not in ["Cluster"]]
         )
-        fig.update_traces(marker=dict(line=dict(width=1)))
-
-        # Overlay cluster centroids (in original units) so the segment
-        # structure is easy to read at a glance, like a textbook cluster diagram.
-        centroids_scaled = model.cluster_centers_
-        centroids_original = scaler.inverse_transform(centroids_scaled)
-        fig.add_scatter(
-            x=centroids_original[:, 0],
-            y=centroids_original[:, 1],
-            mode="markers",
-            marker=dict(color="black", size=12, symbol="circle", line=dict(color="white", width=2)),
-            name="Centroid",
-            showlegend=True
-        )
-
         st.plotly_chart(fig, width='stretch')
 
     with right:
@@ -554,13 +382,11 @@ elif page == "Predict from File":
             batch_df = batch_raw.rename(
                 columns={b_spend_col: "Annual_Spending", b_orders_col: "Orders_Count"}
             )
-            batch_df, b_dup_count, b_missing_count = clean_data(batch_df)
+            batch_df = clean_data(batch_df)
 
             if not set(FEATURES).issubset(batch_df.columns) or batch_df.empty:
                 st.error("Couldn't find valid data in the required columns after cleaning. Please check your file.")
             else:
-                render_cleaning_card(FEATURES, b_dup_count, b_missing_count, key_suffix="batch")
-
                 b_scaled = scaler.transform(batch_df[FEATURES])
                 batch_df["Cluster"] = model.predict(b_scaled)
                 batch_df, _ = label_segments(batch_df)
