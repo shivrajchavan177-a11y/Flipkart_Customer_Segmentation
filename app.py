@@ -400,8 +400,23 @@ elif page == "Dashboard":
         fig = px.scatter(
             df, x="Annual_Spending", y="Orders_Count",
             color="Segment", title="Customer Segmentation",
-            hover_data=[c for c in df.columns if c not in ["Cluster"]]
+            hover_data=[c for c in df.columns if c not in ["Cluster"]],
+            opacity=0.75
         )
+
+        # Overlay cluster centroids (in original units) so the segment
+        # structure is easy to read at a glance, like a textbook cluster diagram.
+        centroids_scaled = model.cluster_centers_
+        centroids_original = scaler.inverse_transform(centroids_scaled)
+        fig.add_scatter(
+            x=centroids_original[:, 0],
+            y=centroids_original[:, 1],
+            mode="markers",
+            marker=dict(color="black", size=12, symbol="circle", line=dict(color="white", width=2)),
+            name="Centroid",
+            showlegend=True
+        )
+
         st.plotly_chart(fig, width='stretch')
 
     with right:
